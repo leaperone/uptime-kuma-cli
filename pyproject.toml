@@ -1,6 +1,6 @@
 [project]
 name = "uptime-kuma-cli"
-version = "0.2.0"
+version = "0.2.1"
 description = "CLI tool for managing Uptime Kuma monitors"
 readme = "README.md"
 requires-python = ">=3.13"
