@@ -129,7 +129,8 @@ def list_monitors(ctx: typer.Context):
 
         for m in sorted(monitors, key=lambda x: x.get("id", 0)):
             mid = m.get("id")
-            mtype = m.get("type", "")
+            mtype_raw = m.get("type", "")
+            mtype = mtype_raw.value if hasattr(mtype_raw, "value") else str(mtype_raw)
             target = m.get("url") or m.get("hostname") or ""
             if m.get("port"):
                 target += f":{m['port']}"
