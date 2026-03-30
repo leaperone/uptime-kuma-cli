@@ -4,9 +4,11 @@ from typing import Optional
 import typer
 from rich.console import Console
 from rich.table import Table
-from uptime_kuma_api import UptimeKumaApi, MonitorType
+from uptime_kuma_api import UptimeKumaApi, MonitorType, NotificationType
 
 app = typer.Typer(help="Uptime Kuma CLI - manage monitors from the command line")
+notification_app = typer.Typer(help="Manage notifications")
+app.add_typer(notification_app, name="notification")
 console = Console()
 
 MONITOR_TYPES = {
@@ -163,6 +165,7 @@ def get(ctx: typer.Context, monitor_id: int = typer.Argument(help="Monitor ID"))
             ("Retry Interval", "retryInterval"), ("Max Retries", "maxretries"),
             ("Description", "description"), ("Keyword", "keyword"),
             ("Accepted Codes", "accepted_statuscodes"),
+            ("Notifications", "notificationIDList"),
         ]
         for label, key in fields:
             val = m.get(key)
@@ -185,6 +188,7 @@ def add(
     keyword: Optional[str] = typer.Option(None, "--keyword", "-k", help="Keyword to search (for keyword type)"),
     dns_type: str = typer.Option("A", "--dns-type", help="DNS record type (for dns type)"),
     parent: Optional[int] = typer.Option(None, "--parent", help="Parent group monitor ID"),
+    notify: Optional[list[int]] = typer.Option(None, "--notify", "-n", help="Notification ID to bind (repeatable)"),
 ):
     """Add a new monitor."""
     if monitor_type not in MONITOR_TYPES:
@@ -218,6 +222,8 @@ def add(
             kwargs["dns_resolve_server"] = "1.1.1.1"
         if parent is not None:
             kwargs["parent"] = parent
+        if notify:
+            kwargs["notificationIDList"] = notify
 
         result = api.add_monitor(**kwargs)
         console.print(f"[green]Monitor added (ID: {result['monitorID']})[/green]")
@@ -233,6 +239,7 @@ def edit(
     url: Optional[str] = typer.Option(None, "--target", help="New URL or hostname"),
     interval: Optional[int] = typer.Option(None, "--interval", "-i", help="New interval in seconds"),
     parent: Optional[int] = typer.Option(None, "--parent", help="Parent group monitor ID (0 to remove)"),
+    notify: Optional[list[int]] = typer.Option(None, "--notify", "-n", help="Notification ID to bind (repeatable, replaces existing)"),
 ):
     """Edit a monitor."""
     api = connect(ctx)
@@ -246,6 +253,8 @@ def edit(
             kwargs["interval"] = interval
         if parent is not None:
             kwargs["parent"] = parent
+        if notify is not None:
+            kwargs["notificationIDList"] = notify
 
         if not kwargs:
             console.print("[yellow]No changes specified.[/yellow]")
@@ -293,6 +302,136 @@ def resume(ctx: typer.Context, monitor_id: int = typer.Argument(help="Monitor ID
     try:
         api.resume_monitor(monitor_id)
         console.print(f"[green]Monitor {monitor_id} resumed.[/green]")
+    finally:
+        api.disconnect()
+
+
+def parse_config(config: list[str]) -> dict:
+    """Parse key=value config pairs."""
+    result = {}
+    for item in config:
+        if "=" not in item:
+            console.print(f"[red]Invalid config format: '{item}'. Use key=value.[/red]")
+            raise typer.Exit(1)
+        key, value = item.split("=", 1)
+        result[key] = value
+    return result
+
+
+@notification_app.command("list")
+def notification_list(ctx: typer.Context):
+    """List all notifications."""
+    api = connect(ctx)
+    try:
+        notifications = api.get_notifications()
+        if not notifications:
+            console.print("No notifications found.")
+            return
+
+        table = Table()
+        table.add_column("ID", style="cyan", justify="right")
+        table.add_column("Name", style="bold")
+        table.add_column("Type")
+        table.add_column("Active")
+        table.add_column("Default")
+
+        for n in sorted(notifications, key=lambda x: x.get("id", 0)):
+            active = "[green]Yes[/green]" if n.get("active") else "[dim]No[/dim]"
+            default = "Yes" if n.get("isDefault") else ""
+            table.add_row(str(n.get("id")), n.get("name", ""), str(n.get("type", "")), active, default)
+
+        console.print(table)
+    finally:
+        api.disconnect()
+
+
+@notification_app.command("get")
+def notification_get(ctx: typer.Context, notification_id: int = typer.Argument(help="Notification ID")):
+    """Get notification details."""
+    api = connect(ctx)
+    try:
+        n = api.get_notification(notification_id)
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Field", style="bold cyan")
+        table.add_column("Value")
+
+        for key, val in sorted(n.items()):
+            if val is not None and val != "":
+                table.add_row(key, str(val))
+
+        console.print(table)
+    finally:
+        api.disconnect()
+
+
+@notification_app.command("create")
+def notification_create(
+    ctx: typer.Context,
+    notification_type: str = typer.Argument(help="Notification type (telegram, discord, slack, smtp, webhook, ...)"),
+    name: str = typer.Argument(help="Notification name"),
+    config: list[str] = typer.Option(..., "--config", "-c", help="Config key=value (repeatable)"),
+    default: bool = typer.Option(False, "--default", "-d", help="Enable by default for new monitors"),
+    apply_existing: bool = typer.Option(False, "--apply-existing", help="Apply to all existing monitors"),
+):
+    """Create a notification.
+
+    Examples:
+
+        kuma notification create telegram "My TG" -c telegramBotToken=xxx -c telegramChatID=123
+
+        kuma notification create discord "My Discord" -c discordWebhookUrl=https://...
+
+        kuma notification create webhook "My Hook" -c webhookURL=https://... -c webhookContentType=json
+    """
+    try:
+        ntype = NotificationType(notification_type)
+    except ValueError:
+        console.print(f"[red]Unknown notification type '{notification_type}'.[/red]")
+        raise typer.Exit(1)
+
+    api = connect(ctx)
+    try:
+        kwargs = parse_config(config)
+        kwargs["type"] = ntype
+        kwargs["name"] = name
+        kwargs["isDefault"] = default
+        kwargs["applyExisting"] = apply_existing
+
+        result = api.add_notification(**kwargs)
+        console.print(f"[green]Notification created (ID: {result['id']})[/green]")
+    finally:
+        api.disconnect()
+
+
+@notification_app.command("test")
+def notification_test(ctx: typer.Context, notification_id: int = typer.Argument(help="Notification ID")):
+    """Test an existing notification."""
+    api = connect(ctx)
+    try:
+        n = api.get_notification(notification_id)
+        result = api.test_notification(**n)
+        if result.get("ok"):
+            console.print(f"[green]{result.get('msg', 'Sent successfully.')}[/green]")
+        else:
+            console.print(f"[red]{result.get('msg', 'Test failed.')}[/red]")
+    finally:
+        api.disconnect()
+
+
+@notification_app.command("delete")
+def notification_delete(
+    ctx: typer.Context,
+    notification_id: int = typer.Argument(help="Notification ID"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete a notification."""
+    if not yes:
+        typer.confirm(f"Delete notification {notification_id}?", abort=True)
+
+    api = connect(ctx)
+    try:
+        api.delete_notification(notification_id)
+        console.print(f"[green]Notification {notification_id} deleted.[/green]")
     finally:
         api.disconnect()
 
