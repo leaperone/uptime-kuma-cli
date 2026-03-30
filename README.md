@@ -7,11 +7,13 @@ A command-line tool for managing [Uptime Kuma](https://github.com/louislam/uptim
 Requires Python >= 3.13.
 
 ```bash
-# Using uv
-uv tool install .
+pip install uptime-kuma-cli
 
-# Or using pip
-pip install .
+# Or using uv
+uv tool install uptime-kuma-cli
+
+# Or using pipx
+pipx install uptime-kuma-cli
 ```
 
 ## Configuration
