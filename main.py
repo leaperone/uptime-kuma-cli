@@ -22,6 +22,7 @@ MONITOR_TYPES = {
     "mysql": MonitorType.MYSQL,
     "mongodb": MonitorType.MONGODB,
     "redis": MonitorType.REDIS,
+    "group": MonitorType.GROUP,
 }
 
 STATUS_TEXT = {
@@ -121,6 +122,7 @@ def list_monitors(ctx: typer.Context):
         table.add_column("Type")
         table.add_column("Target")
         table.add_column("Status")
+        table.add_column("Parent", justify="right")
         table.add_column("Interval", justify="right")
 
         for m in sorted(monitors, key=lambda x: x.get("id", 0)):
@@ -135,8 +137,9 @@ def list_monitors(ctx: typer.Context):
             else:
                 status = STATUS_TEXT.get(status_map.get(mid, -1), "[dim]--[/dim]")
 
+            parent = str(m["parent"]) if m.get("parent") else ""
             interval = f"{m.get('interval', '?')}s"
-            table.add_row(str(mid), m.get("name", ""), str(mtype), target, status, interval)
+            table.add_row(str(mid), m.get("name", ""), str(mtype), target, status, parent, interval)
 
         console.print(table)
     finally:
@@ -156,7 +159,7 @@ def get(ctx: typer.Context, monitor_id: int = typer.Argument(help="Monitor ID"))
         fields = [
             ("ID", "id"), ("Name", "name"), ("Type", "type"),
             ("URL", "url"), ("Hostname", "hostname"), ("Port", "port"),
-            ("Active", "active"), ("Interval", "interval"),
+            ("Active", "active"), ("Parent", "parent"), ("Interval", "interval"),
             ("Retry Interval", "retryInterval"), ("Max Retries", "maxretries"),
             ("Description", "description"), ("Keyword", "keyword"),
             ("Accepted Codes", "accepted_statuscodes"),
@@ -181,6 +184,7 @@ def add(
     interval: int = typer.Option(60, "--interval", "-i", help="Check interval in seconds"),
     keyword: Optional[str] = typer.Option(None, "--keyword", "-k", help="Keyword to search (for keyword type)"),
     dns_type: str = typer.Option("A", "--dns-type", help="DNS record type (for dns type)"),
+    parent: Optional[int] = typer.Option(None, "--parent", help="Parent group monitor ID"),
 ):
     """Add a new monitor."""
     if monitor_type not in MONITOR_TYPES:
@@ -195,7 +199,9 @@ def add(
             "interval": interval,
         }
 
-        if monitor_type in ("http", "keyword", "mqtt"):
+        if monitor_type == "group":
+            pass
+        elif monitor_type in ("http", "keyword", "mqtt"):
             kwargs["url"] = target
         elif monitor_type in ("ping", "port", "dns"):
             kwargs["hostname"] = target
@@ -210,6 +216,8 @@ def add(
             kwargs["dns_resolve_type"] = dns_type
             kwargs["port"] = port or 53
             kwargs["dns_resolve_server"] = "1.1.1.1"
+        if parent is not None:
+            kwargs["parent"] = parent
 
         result = api.add_monitor(**kwargs)
         console.print(f"[green]Monitor added (ID: {result['monitorID']})[/green]")
@@ -224,6 +232,7 @@ def edit(
     name: Optional[str] = typer.Option(None, "--name", help="New name"),
     url: Optional[str] = typer.Option(None, "--target", help="New URL or hostname"),
     interval: Optional[int] = typer.Option(None, "--interval", "-i", help="New interval in seconds"),
+    parent: Optional[int] = typer.Option(None, "--parent", help="Parent group monitor ID (0 to remove)"),
 ):
     """Edit a monitor."""
     api = connect(ctx)
@@ -235,6 +244,8 @@ def edit(
             kwargs["url"] = url
         if interval is not None:
             kwargs["interval"] = interval
+        if parent is not None:
+            kwargs["parent"] = parent
 
         if not kwargs:
             console.print("[yellow]No changes specified.[/yellow]")
